@@ -1,4 +1,5 @@
 use std::thread;
+use std::time::{Duration, Instant};
 
 use rquickjs::{
     AsyncContext, AsyncRuntime, CatchResultExt, Context, Ctx, FromJs, Function, IntoJs, Runtime, function::IntoJsFunc,
@@ -11,7 +12,6 @@ use crate::{JsError, JsResult, JsValue};
 
 /// Synchronous JavaScript runtime wrapping QuickJS.
 pub struct JsRuntime {
-    #[allow(dead_code)]
     rt: Runtime,
     ctx: Context,
 }
@@ -45,6 +45,31 @@ impl JsRuntime {
     pub fn eval_as<T: for<'de> serde::Deserialize<'de>>(&self, code: &str) -> JsResult<T> {
         let js_val = self.eval(code)?;
         js_val.to_rust()
+    }
+
+    /// Evaluate JS code, interrupting execution if it runs longer than `timeout`.
+    ///
+    /// Uses QuickJS's interrupt handler, so even an unyielding infinite loop
+    /// (e.g. `while (true) {}`) is aborted once the deadline passes; the call
+    /// then returns an error instead of blocking the thread forever.
+    pub fn eval_with_timeout(&self, code: &str, timeout: Duration) -> JsResult<JsValue> {
+        let deadline = Instant::now() + timeout;
+        self.rt
+            .set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)));
+        let result = self.eval(code);
+        self.rt.set_interrupt_handler(None);
+        result
+    }
+
+    /// Evaluate JS code with a timeout and deserialize the result.
+    ///
+    /// See [`eval_with_timeout`](Self::eval_with_timeout).
+    pub fn eval_as_with_timeout<T: for<'de> serde::Deserialize<'de>>(
+        &self,
+        code: &str,
+        timeout: Duration,
+    ) -> JsResult<T> {
+        self.eval_with_timeout(code, timeout)?.to_rust()
     }
 
     /// Register a Rust function as a JS global, callable from JavaScript.
@@ -100,11 +125,53 @@ enum AsyncRequest {
         code: String,
         reply: oneshot::Sender<Result<JsValue, String>>,
     },
+    EvalWithTimeout {
+        code: String,
+        timeout: Duration,
+        reply: oneshot::Sender<Result<JsValue, String>>,
+    },
     Setup {
         setup: SetupFn,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Shutdown,
+}
+
+/// Evaluate async JS code on the given context with top-level-await support.
+async fn run_eval(async_ctx: &AsyncContext, code: String) -> Result<JsValue, String> {
+    async_ctx
+        .async_with(async |ctx| {
+            // `eval_promise` evaluates with top-level-await support and always
+            // yields a Promise that resolves to `{ value: <result> }` (QuickJS
+            // async-eval shape).
+            let promise = match ctx.eval_promise(code.as_str()).catch(&ctx) {
+                Ok(p) => p,
+                Err(e) => return Err(e.to_string()),
+            };
+            let resolved = match promise.into_future::<rquickjs::Value>().await.catch(&ctx) {
+                Ok(v) => v,
+                Err(e) => return Err(e.to_string()),
+            };
+            let value = match resolved.as_object() {
+                Some(obj) => match obj.get::<_, rquickjs::Value>("value") {
+                    Ok(v) => v,
+                    Err(e) => return Err(e.to_string()),
+                },
+                None => resolved,
+            };
+            // The script's own result may itself be a Promise.
+            let value = if value.is_promise() {
+                let inner = value.into_promise().unwrap();
+                match inner.into_future::<rquickjs::Value>().await.catch(&ctx) {
+                    Ok(v) => v,
+                    Err(e) => return Err(e.to_string()),
+                }
+            } else {
+                value
+            };
+            JsValue::from_js(&ctx, value).map_err(|e| e.to_string())
+        })
+        .await
 }
 
 /// Async JavaScript runtime with a dedicated worker thread.
@@ -139,39 +206,15 @@ impl AsyncJsRuntime {
                 while let Some(req) = rx.recv().await {
                     match req {
                         AsyncRequest::Eval { code, reply } => {
-                            let result: Result<JsValue, String> = async_ctx
-                                .async_with(async |ctx| {
-                                    // `eval_promise` evaluates with top-level-await
-                                    // support and always yields a Promise that resolves
-                                    // to `{ value: <result> }` (QuickJS async-eval shape).
-                                    let promise = match ctx.eval_promise(code.as_str()).catch(&ctx) {
-                                        Ok(p) => p,
-                                        Err(e) => return Err(e.to_string()),
-                                    };
-                                    let resolved = match promise.into_future::<rquickjs::Value>().await.catch(&ctx) {
-                                        Ok(v) => v,
-                                        Err(e) => return Err(e.to_string()),
-                                    };
-                                    let value = match resolved.as_object() {
-                                        Some(obj) => match obj.get::<_, rquickjs::Value>("value") {
-                                            Ok(v) => v,
-                                            Err(e) => return Err(e.to_string()),
-                                        },
-                                        None => resolved,
-                                    };
-                                    // The script's own result may itself be a Promise.
-                                    let value = if value.is_promise() {
-                                        let inner = value.into_promise().unwrap();
-                                        match inner.into_future::<rquickjs::Value>().await.catch(&ctx) {
-                                            Ok(v) => v,
-                                            Err(e) => return Err(e.to_string()),
-                                        }
-                                    } else {
-                                        value
-                                    };
-                                    JsValue::from_js(&ctx, value).map_err(|e| e.to_string())
-                                })
+                            let _ = reply.send(run_eval(&async_ctx, code).await);
+                        }
+                        AsyncRequest::EvalWithTimeout { code, timeout, reply } => {
+                            let deadline = Instant::now() + timeout;
+                            async_rt
+                                .set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)))
                                 .await;
+                            let result = run_eval(&async_ctx, code).await;
+                            async_rt.set_interrupt_handler(None).await;
                             let _ = reply.send(result);
                         }
                         AsyncRequest::Setup { setup, reply } => {
@@ -204,6 +247,32 @@ impl AsyncJsRuntime {
     pub async fn eval_as<T: for<'de> serde::Deserialize<'de>>(&self, code: &str) -> JsResult<T> {
         let js_val = self.eval(code).await?;
         js_val.to_rust()
+    }
+
+    /// Evaluate async JS code, interrupting it if it runs longer than `timeout`.
+    ///
+    /// Uses QuickJS's interrupt handler, so even a synchronous infinite loop on
+    /// the worker thread is aborted once the deadline passes and the call
+    /// returns an error instead of hanging the worker (and every later request).
+    pub async fn eval_with_timeout(&self, code: &str, timeout: Duration) -> JsResult<JsValue> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx.send(AsyncRequest::EvalWithTimeout {
+            code: code.to_string(),
+            timeout,
+            reply: reply_tx,
+        })?;
+        reply_rx.await.map_err(JsError::from)?.map_err(JsError::QuickJs)
+    }
+
+    /// Evaluate async JS code with a timeout and deserialize the result.
+    ///
+    /// See [`eval_with_timeout`](Self::eval_with_timeout).
+    pub async fn eval_as_with_timeout<T: for<'de> serde::Deserialize<'de>>(
+        &self,
+        code: &str,
+        timeout: Duration,
+    ) -> JsResult<T> {
+        self.eval_with_timeout(code, timeout).await?.to_rust()
     }
 
     /// Register a Rust function as a JS global on the worker runtime.

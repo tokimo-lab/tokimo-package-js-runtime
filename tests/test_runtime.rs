@@ -525,3 +525,63 @@ async fn test_async_register_mutable_fn() {
     let b: i64 = rt.eval_as("next()").await.unwrap();
     assert_eq!((a, b), (1, 2));
 }
+
+// ─── Timeout / Interrupt ───────────────────────────────────────────────────
+
+#[test]
+fn test_sync_eval_timeout_interrupts_infinite_loop() {
+    use std::time::{Duration, Instant};
+    let rt = JsRuntime::new().unwrap();
+    let start = Instant::now();
+    let err = rt
+        .eval_with_timeout("while (true) {}", Duration::from_millis(150))
+        .unwrap_err();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "did not interrupt promptly: {elapsed:?}"
+    );
+    assert!(err.to_string().to_lowercase().contains("interrupt"), "got: {err}");
+    // The runtime is still usable after a timeout.
+    let ok: i64 = rt.eval_as("1 + 2").unwrap();
+    assert_eq!(ok, 3);
+}
+
+#[test]
+fn test_sync_eval_timeout_allows_fast_code() {
+    use std::time::Duration;
+    let rt = JsRuntime::new().unwrap();
+    let result: i64 = rt.eval_as_with_timeout("21 * 2", Duration::from_secs(5)).unwrap();
+    assert_eq!(result, 42);
+}
+
+#[tokio::test]
+async fn test_async_eval_timeout_interrupts_infinite_loop() {
+    use std::time::{Duration, Instant};
+    let rt = AsyncJsRuntime::new().unwrap();
+    let start = Instant::now();
+    let err = rt
+        .eval_with_timeout("while (true) {}", Duration::from_millis(150))
+        .await
+        .unwrap_err();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "did not interrupt promptly: {elapsed:?}"
+    );
+    assert!(err.to_string().to_lowercase().contains("interrupt"), "got: {err}");
+    // The worker is still usable after a timeout.
+    let ok: i64 = rt.eval_as("40 + 2").await.unwrap();
+    assert_eq!(ok, 42);
+}
+
+#[tokio::test]
+async fn test_async_eval_timeout_allows_fast_code() {
+    use std::time::Duration;
+    let rt = AsyncJsRuntime::new().unwrap();
+    let result: i64 = rt
+        .eval_as_with_timeout("await Promise.resolve(40) + 2", Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(result, 42);
+}

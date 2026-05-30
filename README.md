@@ -6,6 +6,7 @@ QuickJS JavaScript runtime wrapper for Rust with async support and function inje
 
 - **Sync & Async execution** — evaluate JS code from Rust, with automatic Promise resolution
 - **Function injection** — register Rust closures (sync/async) into the JS global scope
+- **Execution timeouts** — interrupt runaway scripts (even `while (true) {}`) via `eval_with_timeout`
 - **Serde-based type bridge** — `JsValue` enum with automatic conversion to/from Rust types via serde
 - **Thread-safe async** — dedicated OS thread with isolated Tokio runtime for QuickJS (non-`Send`/`Sync` GC)
 
@@ -74,6 +75,21 @@ rt.register_fn("next", MutFn::new(move || { n += 1; n })).unwrap();
 let a: i32 = rt.eval_as("next()").unwrap();
 let b: i32 = rt.eval_as("next()").unwrap();
 assert_eq!((a, b), (1, 2));
+```
+
+### Timeouts
+
+Guard against runaway scripts — `eval_with_timeout` interrupts execution once
+the deadline passes, even for unyielding infinite loops. Both runtimes support
+it (the async variant prevents a stuck script from hanging the worker thread):
+
+```rust
+use std::time::Duration;
+use tokimo_package_js_runtime::JsRuntime;
+
+let rt = JsRuntime::new().unwrap();
+let result = rt.eval_with_timeout("while (true) {}", Duration::from_millis(100));
+assert!(result.is_err()); // interrupted; the runtime stays usable afterwards
 ```
 
 ### Export to Custom Structs
