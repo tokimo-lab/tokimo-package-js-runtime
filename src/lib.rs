@@ -1,8 +1,8 @@
 //! # tokimo-package-js-runtime
 //!
 //! A QuickJS JavaScript runtime wrapper for Rust with:
-//! - Sync/async JS execution
-//! - Rust function injection (sync and async)
+//! - Sync and async JS execution (the async runtime supports top-level await)
+//! - Rust function injection into the JS global scope
 //! - JS value export and parsing via serde
 
 mod error;
@@ -12,6 +12,10 @@ mod value;
 pub use error::JsError;
 pub use runtime::{AsyncJsRuntime, JsRuntime};
 pub use value::JsValue;
+
+/// Re-exported rquickjs helpers for building functions to register with
+/// [`JsRuntime::register_fn`] / [`JsRuntime::set_global`].
+pub use rquickjs::function::{Async, Func, MutFn, OnceFn};
 
 /// Result type alias for this crate.
 pub type JsResult<T> = Result<T, JsError>;

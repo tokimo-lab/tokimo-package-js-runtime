@@ -127,8 +127,7 @@ fn test_sync_eval_promise_errors() {
 #[test]
 fn test_register_sync_function() {
     let rt = JsRuntime::new().unwrap();
-    use rquickjs::function::Func;
-    rt.register_fn("add", Func::new(|a: i32, b: i32| a + b)).unwrap();
+    rt.register_fn("add", |a: i32, b: i32| a + b).unwrap();
     let result: i32 = rt.eval_as("add(3, 4)").unwrap();
     assert_eq!(result, 7);
 }
@@ -136,8 +135,7 @@ fn test_register_sync_function() {
 #[test]
 fn test_register_string_function() {
     let rt = JsRuntime::new().unwrap();
-    use rquickjs::function::Func;
-    rt.register_fn("greet", Func::new(|name: String| format!("Hello, {}!", name)))
+    rt.register_fn("greet", |name: String| format!("Hello, {}!", name))
         .unwrap();
     let result: String = rt.eval_as("greet('World')").unwrap();
     assert_eq!(result, "Hello, World!");
@@ -146,9 +144,8 @@ fn test_register_string_function() {
 #[test]
 fn test_register_multiple_functions() {
     let rt = JsRuntime::new().unwrap();
-    use rquickjs::function::Func;
-    rt.register_fn("add", Func::new(|a: i32, b: i32| a + b)).unwrap();
-    rt.register_fn("mul", Func::new(|a: i32, b: i32| a * b)).unwrap();
+    rt.register_fn("add", |a: i32, b: i32| a + b).unwrap();
+    rt.register_fn("mul", |a: i32, b: i32| a * b).unwrap();
     let result: i32 = rt.eval_as("mul(add(2, 3), 4)").unwrap();
     assert_eq!(result, 20);
 }
@@ -156,8 +153,7 @@ fn test_register_multiple_functions() {
 #[test]
 fn test_register_function_with_no_args() {
     let rt = JsRuntime::new().unwrap();
-    use rquickjs::function::Func;
-    rt.register_fn("get_pi", Func::new(|| std::f64::consts::PI)).unwrap();
+    rt.register_fn("get_pi", || std::f64::consts::PI).unwrap();
     let result: f64 = rt.eval_as("get_pi()").unwrap();
     assert!((result - std::f64::consts::PI).abs() < 1e-10);
 }
@@ -165,12 +161,8 @@ fn test_register_function_with_no_args() {
 #[test]
 fn test_register_function_with_complex_return() {
     let rt = JsRuntime::new().unwrap();
-    use rquickjs::function::Func;
-    rt.register_fn(
-        "get_info",
-        Func::new(|| vec![JsValue::String("name".into()), JsValue::Int(42)]),
-    )
-    .unwrap();
+    rt.register_fn("get_info", || vec![JsValue::String("name".into()), JsValue::Int(42)])
+        .unwrap();
     let result: Vec<JsValue> = rt.eval_as("get_info()").unwrap();
     assert_eq!(result.len(), 2);
 }
@@ -178,8 +170,7 @@ fn test_register_function_with_complex_return() {
 #[test]
 fn test_register_function_interop() {
     let rt = JsRuntime::new().unwrap();
-    use rquickjs::function::Func;
-    rt.register_fn("double", Func::new(|n: i32| n * 2)).unwrap();
+    rt.register_fn("double", |n: i32| n * 2).unwrap();
     // Use injected function inside JS code
     let result: i32 = rt
         .eval_as(
@@ -190,6 +181,40 @@ fn test_register_function_interop() {
         )
         .unwrap();
     assert_eq!(result, 30); // 2+4+6+8+10
+}
+
+#[test]
+fn test_register_mutable_function() {
+    use tokimo_package_js_runtime::MutFn;
+    let rt = JsRuntime::new().unwrap();
+    let mut counter = 0i32;
+    rt.register_fn(
+        "next",
+        MutFn::new(move || {
+            counter += 1;
+            counter
+        }),
+    )
+    .unwrap();
+    let a: i32 = rt.eval_as("next()").unwrap();
+    let b: i32 = rt.eval_as("next()").unwrap();
+    assert_eq!((a, b), (1, 2));
+}
+
+#[test]
+fn test_set_global_value() {
+    let rt = JsRuntime::new().unwrap();
+    rt.set_global("answer", JsValue::Int(42)).unwrap();
+    let result: i64 = rt.eval_as("answer + 1").unwrap();
+    assert_eq!(result, 43);
+}
+
+#[test]
+fn test_function_has_name() {
+    let rt = JsRuntime::new().unwrap();
+    rt.register_fn("myFunc", |x: i32| x).unwrap();
+    let name: String = rt.eval_as("myFunc.name").unwrap();
+    assert_eq!(name, "myFunc");
 }
 
 // ─── Value Export & Parsing ────────────────────────────────────────────────
@@ -284,7 +309,6 @@ fn test_export_struct_with_nested() {
 
 #[test]
 fn test_function_returning_struct() {
-    use rquickjs::function::Func;
     use serde::Deserialize;
 
     #[derive(Deserialize, Debug, PartialEq)]
@@ -294,15 +318,12 @@ fn test_function_returning_struct() {
     }
 
     let rt = JsRuntime::new().unwrap();
-    rt.register_fn(
-        "createUser",
-        Func::new(|id: i32, name: String| {
-            let mut map = BTreeMap::new();
-            map.insert("id".to_string(), JsValue::Int(id.into()));
-            map.insert("name".to_string(), JsValue::String(name));
-            JsValue::Object(map)
-        }),
-    )
+    rt.register_fn("createUser", |id: i32, name: String| {
+        let mut map = BTreeMap::new();
+        map.insert("id".to_string(), JsValue::Int(id.into()));
+        map.insert("name".to_string(), JsValue::String(name));
+        JsValue::Object(map)
+    })
     .unwrap();
 
     let user: User = rt.eval_as("createUser(1, 'Alice')").unwrap();

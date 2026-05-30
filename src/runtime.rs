@@ -1,8 +1,7 @@
 use std::thread;
 
 use rquickjs::{
-    AsyncContext, AsyncRuntime, CatchResultExt, Context, FromJs, Function, Runtime,
-    function::{Func, MutFn},
+    AsyncContext, AsyncRuntime, CatchResultExt, Context, FromJs, Function, IntoJs, Runtime, function::IntoJsFunc,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -48,45 +47,43 @@ impl JsRuntime {
         js_val.to_rust()
     }
 
-    /// Register a synchronous Rust function in JS global scope.
+    /// Register a Rust function as a JS global, callable from JavaScript.
+    ///
+    /// Accepts a bare closure directly (this mirrors [`rquickjs::Function::new`]).
+    /// For closures that capture mutable state wrap them in [`MutFn`](crate::MutFn);
+    /// for `FnOnce` closures use [`OnceFn`](crate::OnceFn).
     ///
     /// # Example
-    /// ```ignore
-    /// use rquickjs::function::Func;
-    /// runtime.register_fn("add", Func::new(|a: i32, b: i32| a + b));
     /// ```
-    pub fn register_fn<F>(&self, name: &str, func: F) -> JsResult<()>
+    /// # use tokimo_package_js_runtime::JsRuntime;
+    /// let rt = JsRuntime::new().unwrap();
+    /// rt.register_fn("add", |a: i32, b: i32| a + b).unwrap();
+    /// let sum: i32 = rt.eval_as("add(3, 4)").unwrap();
+    /// assert_eq!(sum, 7);
+    /// ```
+    pub fn register_fn<F, P>(&self, name: &str, func: F) -> JsResult<()>
     where
-        F: for<'js> rquickjs::IntoJs<'js>,
-    {
-        self.ctx.with(|ctx| {
-            let global = ctx.globals();
-            global.set(name, func)?;
-            Ok(())
-        })
-    }
-
-    /// Register a mutable synchronous Rust function in JS global scope.
-    pub fn register_fn_mut<F>(&self, name: &str, func: F) -> JsResult<()>
-    where
-        F: FnMut() -> i32 + 'static,
-    {
-        self.ctx.with(|ctx| {
-            let global = ctx.globals();
-            global.set(name, Func::from(MutFn::from(func)))?;
-            Ok(())
-        })
-    }
-
-    /// Register a function created from `Function::new` directly.
-    pub fn register_function<F, P>(&self, name: &str, func: F) -> JsResult<()>
-    where
-        F: for<'js> rquickjs::function::IntoJsFunc<'js, P> + 'static,
+        F: for<'js> IntoJsFunc<'js, P> + 'static,
     {
         self.ctx.with(|ctx| {
             let js_func = Function::new(ctx.clone(), func)?;
-            let global = ctx.globals();
-            global.set(name, js_func)?;
+            js_func.set_name(name)?;
+            ctx.globals().set(name, js_func)?;
+            Ok(())
+        })
+    }
+
+    /// Set an arbitrary global value.
+    ///
+    /// Use this for plain values (numbers, strings, objects/arrays via
+    /// [`JsValue`]) or for prebuilt function helpers such as
+    /// [`Func`](crate::Func)/[`Async`](crate::Async).
+    pub fn set_global<V>(&self, name: &str, value: V) -> JsResult<()>
+    where
+        V: for<'js> IntoJs<'js>,
+    {
+        self.ctx.with(|ctx| {
+            ctx.globals().set(name, value)?;
             Ok(())
         })
     }
