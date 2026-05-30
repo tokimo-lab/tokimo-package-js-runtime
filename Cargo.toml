@@ -1,0 +1,16 @@
+[package]
+name = "tokimo-package-js-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "QuickJS JavaScript runtime wrapper for Rust with async function injection support"
+license = "MIT"
+
+[dependencies]
+rquickjs = { version = "0.12", features = ["full", "full-async", "futures", "macro"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
