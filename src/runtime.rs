@@ -2,7 +2,7 @@ use std::thread;
 
 use rquickjs::{
     function::{Func, MutFn},
-    AsyncContext, AsyncRuntime, Context, FromJs, Function, Runtime,
+    AsyncContext, AsyncRuntime, CatchResultExt, Context, FromJs, Function, Runtime,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -29,7 +29,10 @@ impl JsRuntime {
     /// Evaluate JS code and return the result as a `JsValue`.
     pub fn eval(&self, code: &str) -> JsResult<JsValue> {
         self.ctx.with(|ctx| {
-            let val: rquickjs::Value = ctx.eval(code)?;
+            let val: rquickjs::Value = ctx
+                .eval(code)
+                .catch(&ctx)
+                .map_err(|e| JsError::QuickJs(e.to_string()))?;
             JsValue::from_js(&ctx, val).map_err(|e| JsError::TypeConversion(e.to_string()))
         })
     }
@@ -128,20 +131,44 @@ impl AsyncJsRuntime {
                         AsyncRequest::Eval { code, reply } => {
                             let result: Result<JsValue, String> = async_ctx
                                 .async_with(async |ctx| {
-                                    let val: rquickjs::Value = match ctx.eval(code.as_str()) {
+                                    // `eval_promise` evaluates with top-level-await
+                                    // support and always yields a Promise that resolves
+                                    // to `{ value: <result> }` (QuickJS async-eval shape).
+                                    let promise = match ctx.eval_promise(code.as_str()).catch(&ctx)
+                                    {
+                                        Ok(p) => p,
+                                        Err(e) => return Err(e.to_string()),
+                                    };
+                                    let resolved = match promise
+                                        .into_future::<rquickjs::Value>()
+                                        .await
+                                        .catch(&ctx)
+                                    {
                                         Ok(v) => v,
                                         Err(e) => return Err(e.to_string()),
                                     };
-                                    // If the result is a promise, await it
-                                    if val.is_promise() {
-                                        let promise = val.into_promise().unwrap();
-                                        match promise.into_future::<JsValue>().await {
-                                            Ok(js_val) => Ok(js_val),
-                                            Err(e) => Err(e.to_string()),
+                                    let value = match resolved.as_object() {
+                                        Some(obj) => match obj.get::<_, rquickjs::Value>("value") {
+                                            Ok(v) => v,
+                                            Err(e) => return Err(e.to_string()),
+                                        },
+                                        None => resolved,
+                                    };
+                                    // The script's own result may itself be a Promise.
+                                    let value = if value.is_promise() {
+                                        let inner = value.into_promise().unwrap();
+                                        match inner
+                                            .into_future::<rquickjs::Value>()
+                                            .await
+                                            .catch(&ctx)
+                                        {
+                                            Ok(v) => v,
+                                            Err(e) => return Err(e.to_string()),
                                         }
                                     } else {
-                                        JsValue::from_js(&ctx, val).map_err(|e| e.to_string())
-                                    }
+                                        value
+                                    };
+                                    JsValue::from_js(&ctx, value).map_err(|e| e.to_string())
                                 })
                                 .await;
                             let _ = reply.send(result);

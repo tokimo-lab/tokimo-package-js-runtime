@@ -354,3 +354,38 @@ async fn test_async_eval_error() {
     let result = rt.eval("throw new Error('async error')").await;
     assert!(result.is_err());
 }
+
+#[tokio::test]
+async fn test_async_top_level_await() {
+    let rt = AsyncJsRuntime::new().unwrap();
+    let result: i64 = rt
+        .eval_as("await Promise.resolve(40) + await Promise.resolve(2)")
+        .await
+        .unwrap();
+    assert_eq!(result, 42);
+}
+
+#[tokio::test]
+async fn test_async_top_level_await_with_function() {
+    let rt = AsyncJsRuntime::new().unwrap();
+    let result: String = rt
+        .eval_as(
+            r#"
+            async function fetchData() {
+                return "data";
+            }
+            const value = await fetchData();
+            `got: ${value}`
+        "#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result, "got: data");
+}
+
+#[tokio::test]
+async fn test_async_error_message_preserved() {
+    let rt = AsyncJsRuntime::new().unwrap();
+    let err = rt.eval("throw new Error('boom')").await.unwrap_err();
+    assert!(err.to_string().contains("boom"), "got: {err}");
+}
