@@ -14,7 +14,9 @@ pub use runtime::{AsyncJsRuntime, JsRuntime};
 pub use value::JsValue;
 
 /// Re-exported rquickjs helpers for building functions to register with
-/// [`JsRuntime::register_fn`] / [`JsRuntime::set_global`].
+/// [`JsRuntime::register_fn`] / [`JsRuntime::set_global`] (and their
+/// [`AsyncJsRuntime`] equivalents). Wrap a future-returning closure in
+/// [`Async`] to inject a function that JavaScript can `await`.
 pub use rquickjs::function::{Async, Func, MutFn, OnceFn};
 
 /// Result type alias for this crate.

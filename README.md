@@ -30,6 +30,26 @@ let result: i64 = rt.eval_as("await Promise.resolve(40) + 2").await.unwrap();
 assert_eq!(result, 42);
 ```
 
+`AsyncJsRuntime` also supports function injection, including **async** Rust
+functions that JavaScript can `await`:
+
+```rust
+use tokimo_package_js_runtime::{AsyncJsRuntime, Async};
+
+let rt = AsyncJsRuntime::new().unwrap();
+rt.register_fn(
+    "delayedDouble",
+    Async(|x: i32| async move {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        x * 2
+    }),
+)
+.await
+.unwrap();
+let result: i64 = rt.eval_as("await delayedDouble(21)").await.unwrap();
+assert_eq!(result, 42);
+```
+
 ### Function Injection
 
 Register a Rust closure as a JS global — pass the closure directly:

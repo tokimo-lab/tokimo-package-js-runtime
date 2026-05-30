@@ -1,7 +1,7 @@
 use std::thread;
 
 use rquickjs::{
-    AsyncContext, AsyncRuntime, CatchResultExt, Context, FromJs, Function, IntoJs, Runtime, function::IntoJsFunc,
+    AsyncContext, AsyncRuntime, CatchResultExt, Context, Ctx, FromJs, Function, IntoJs, Runtime, function::IntoJsFunc,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -91,10 +91,18 @@ impl JsRuntime {
 
 // ─── Async Runtime ─────────────────────────────────────────────────────────
 
+/// A boxed setup closure run on the worker thread with access to the JS
+/// context. Used to inject globals/functions into the async runtime.
+type SetupFn = Box<dyn for<'js> FnOnce(&Ctx<'js>) -> Result<(), String> + Send>;
+
 enum AsyncRequest {
     Eval {
         code: String,
         reply: oneshot::Sender<Result<JsValue, String>>,
+    },
+    Setup {
+        setup: SetupFn,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     Shutdown,
 }
@@ -166,6 +174,10 @@ impl AsyncJsRuntime {
                                 .await;
                             let _ = reply.send(result);
                         }
+                        AsyncRequest::Setup { setup, reply } => {
+                            let result: Result<(), String> = async_ctx.async_with(async |ctx| setup(&ctx)).await;
+                            let _ = reply.send(result);
+                        }
                         AsyncRequest::Shutdown => break,
                     }
                 }
@@ -192,6 +204,46 @@ impl AsyncJsRuntime {
     pub async fn eval_as<T: for<'de> serde::Deserialize<'de>>(&self, code: &str) -> JsResult<T> {
         let js_val = self.eval(code).await?;
         js_val.to_rust()
+    }
+
+    /// Register a Rust function as a JS global on the worker runtime.
+    ///
+    /// Accepts a bare closure directly. To inject an **async** function that
+    /// JavaScript can `await`, wrap a future-returning closure in
+    /// [`Async`](crate::Async). For `FnMut` state use [`MutFn`](crate::MutFn).
+    ///
+    /// The closure must be `Send` because it is moved to the dedicated worker
+    /// thread that owns the QuickJS context.
+    pub async fn register_fn<F, P>(&self, name: &str, func: F) -> JsResult<()>
+    where
+        F: for<'js> IntoJsFunc<'js, P> + Send + 'static,
+        P: 'static,
+    {
+        let name = name.to_owned();
+        let setup: SetupFn = Box::new(move |ctx: &Ctx| {
+            let js_func = Function::new(ctx.clone(), func).map_err(|e| e.to_string())?;
+            js_func.set_name(&name).map_err(|e| e.to_string())?;
+            ctx.globals().set(name.as_str(), js_func).map_err(|e| e.to_string())?;
+            Ok(())
+        });
+        self.send_setup(setup).await
+    }
+
+    /// Set an arbitrary global value on the worker runtime.
+    pub async fn set_global<V>(&self, name: &str, value: V) -> JsResult<()>
+    where
+        V: for<'js> IntoJs<'js> + Send + 'static,
+    {
+        let name = name.to_owned();
+        let setup: SetupFn =
+            Box::new(move |ctx: &Ctx| ctx.globals().set(name.as_str(), value).map_err(|e| e.to_string()));
+        self.send_setup(setup).await
+    }
+
+    async fn send_setup(&self, setup: SetupFn) -> JsResult<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx.send(AsyncRequest::Setup { setup, reply: reply_tx })?;
+        reply_rx.await.map_err(JsError::from)?.map_err(JsError::QuickJs)
     }
 }
 

@@ -442,3 +442,86 @@ async fn test_async_error_message_preserved() {
     let err = rt.eval("throw new Error('boom')").await.unwrap_err();
     assert!(err.to_string().contains("boom"), "got: {err}");
 }
+
+// ─── Async Function Injection ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_async_register_sync_fn() {
+    let rt = AsyncJsRuntime::new().unwrap();
+    rt.register_fn("add", |a: i32, b: i32| a + b).await.unwrap();
+    let result: i64 = rt.eval_as("add(20, 22)").await.unwrap();
+    assert_eq!(result, 42);
+}
+
+#[tokio::test]
+async fn test_async_register_async_fn_awaitable() {
+    use tokimo_package_js_runtime::Async;
+    let rt = AsyncJsRuntime::new().unwrap();
+    rt.register_fn(
+        "delayedDouble",
+        Async(|x: i32| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            x * 2
+        }),
+    )
+    .await
+    .unwrap();
+    // The injected async function is awaited from JavaScript.
+    let result: i64 = rt.eval_as("await delayedDouble(21)").await.unwrap();
+    assert_eq!(result, 42);
+}
+
+#[tokio::test]
+async fn test_async_register_async_fn_inside_js() {
+    use tokimo_package_js_runtime::Async;
+    let rt = AsyncJsRuntime::new().unwrap();
+    rt.register_fn(
+        "fetchValue",
+        Async(|key: String| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            format!("value-for-{key}")
+        }),
+    )
+    .await
+    .unwrap();
+    let result: String = rt
+        .eval_as(
+            r#"
+            async function main() {
+                const v = await fetchValue("abc");
+                return v.toUpperCase();
+            }
+            main()
+        "#,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result, "VALUE-FOR-ABC");
+}
+
+#[tokio::test]
+async fn test_async_set_global() {
+    let rt = AsyncJsRuntime::new().unwrap();
+    rt.set_global("base", JsValue::Int(100)).await.unwrap();
+    let result: i64 = rt.eval_as("base + 1").await.unwrap();
+    assert_eq!(result, 101);
+}
+
+#[tokio::test]
+async fn test_async_register_mutable_fn() {
+    use tokimo_package_js_runtime::MutFn;
+    let rt = AsyncJsRuntime::new().unwrap();
+    let mut counter = 0i32;
+    rt.register_fn(
+        "next",
+        MutFn::new(move || {
+            counter += 1;
+            counter
+        }),
+    )
+    .await
+    .unwrap();
+    let a: i64 = rt.eval_as("next()").await.unwrap();
+    let b: i64 = rt.eval_as("next()").await.unwrap();
+    assert_eq!((a, b), (1, 2));
+}
