@@ -87,8 +87,7 @@ fn test_eval_error() {
 fn test_register_sync_function() {
     let rt = JsRuntime::new().unwrap();
     use rquickjs::function::Func;
-    rt.register_fn("add", Func::new(|a: i32, b: i32| a + b))
-        .unwrap();
+    rt.register_fn("add", Func::new(|a: i32, b: i32| a + b)).unwrap();
     let result: i32 = rt.eval_as("add(3, 4)").unwrap();
     assert_eq!(result, 7);
 }
@@ -97,11 +96,8 @@ fn test_register_sync_function() {
 fn test_register_string_function() {
     let rt = JsRuntime::new().unwrap();
     use rquickjs::function::Func;
-    rt.register_fn(
-        "greet",
-        Func::new(|name: String| format!("Hello, {}!", name)),
-    )
-    .unwrap();
+    rt.register_fn("greet", Func::new(|name: String| format!("Hello, {}!", name)))
+        .unwrap();
     let result: String = rt.eval_as("greet('World')").unwrap();
     assert_eq!(result, "Hello, World!");
 }
@@ -110,10 +106,8 @@ fn test_register_string_function() {
 fn test_register_multiple_functions() {
     let rt = JsRuntime::new().unwrap();
     use rquickjs::function::Func;
-    rt.register_fn("add", Func::new(|a: i32, b: i32| a + b))
-        .unwrap();
-    rt.register_fn("mul", Func::new(|a: i32, b: i32| a * b))
-        .unwrap();
+    rt.register_fn("add", Func::new(|a: i32, b: i32| a + b)).unwrap();
+    rt.register_fn("mul", Func::new(|a: i32, b: i32| a * b)).unwrap();
     let result: i32 = rt.eval_as("mul(add(2, 3), 4)").unwrap();
     assert_eq!(result, 20);
 }
@@ -122,8 +116,7 @@ fn test_register_multiple_functions() {
 fn test_register_function_with_no_args() {
     let rt = JsRuntime::new().unwrap();
     use rquickjs::function::Func;
-    rt.register_fn("get_pi", Func::new(|| std::f64::consts::PI))
-        .unwrap();
+    rt.register_fn("get_pi", Func::new(|| std::f64::consts::PI)).unwrap();
     let result: f64 = rt.eval_as("get_pi()").unwrap();
     assert!((result - std::f64::consts::PI).abs() < 1e-10);
 }
@@ -242,9 +235,7 @@ fn test_export_struct_with_nested() {
     }
 
     let rt = JsRuntime::new().unwrap();
-    let config: Config = rt
-        .eval_as("({name: 'test', values: [1, 2, 3], active: true})")
-        .unwrap();
+    let config: Config = rt.eval_as("({name: 'test', values: [1, 2, 3], active: true})").unwrap();
     assert_eq!(config.name, "test");
     assert_eq!(config.values, vec![1, 2, 3]);
     assert!(config.active);

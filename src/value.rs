@@ -22,8 +22,7 @@ pub enum JsValue {
 impl JsValue {
     /// Convert to a Rust type using serde deserialization.
     pub fn to_rust<T: for<'de> Deserialize<'de>>(&self) -> Result<T, JsError> {
-        let json =
-            serde_json::to_string(self).map_err(|e| JsError::TypeConversion(e.to_string()))?;
+        let json = serde_json::to_string(self).map_err(|e| JsError::TypeConversion(e.to_string()))?;
         serde_json::from_str(&json).map_err(|e| JsError::TypeConversion(e.to_string()))
     }
 }

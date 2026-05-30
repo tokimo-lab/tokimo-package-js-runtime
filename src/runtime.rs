@@ -1,8 +1,8 @@
 use std::thread;
 
 use rquickjs::{
-    function::{Func, MutFn},
     AsyncContext, AsyncRuntime, CatchResultExt, Context, FromJs, Function, Runtime,
+    function::{Func, MutFn},
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -134,16 +134,11 @@ impl AsyncJsRuntime {
                                     // `eval_promise` evaluates with top-level-await
                                     // support and always yields a Promise that resolves
                                     // to `{ value: <result> }` (QuickJS async-eval shape).
-                                    let promise = match ctx.eval_promise(code.as_str()).catch(&ctx)
-                                    {
+                                    let promise = match ctx.eval_promise(code.as_str()).catch(&ctx) {
                                         Ok(p) => p,
                                         Err(e) => return Err(e.to_string()),
                                     };
-                                    let resolved = match promise
-                                        .into_future::<rquickjs::Value>()
-                                        .await
-                                        .catch(&ctx)
-                                    {
+                                    let resolved = match promise.into_future::<rquickjs::Value>().await.catch(&ctx) {
                                         Ok(v) => v,
                                         Err(e) => return Err(e.to_string()),
                                     };
@@ -157,11 +152,7 @@ impl AsyncJsRuntime {
                                     // The script's own result may itself be a Promise.
                                     let value = if value.is_promise() {
                                         let inner = value.into_promise().unwrap();
-                                        match inner
-                                            .into_future::<rquickjs::Value>()
-                                            .await
-                                            .catch(&ctx)
-                                        {
+                                        match inner.into_future::<rquickjs::Value>().await.catch(&ctx) {
                                             Ok(v) => v,
                                             Err(e) => return Err(e.to_string()),
                                         }
@@ -192,10 +183,7 @@ impl AsyncJsRuntime {
             code: code.to_string(),
             reply: reply_tx,
         })?;
-        reply_rx
-            .await
-            .map_err(JsError::from)?
-            .map_err(JsError::QuickJs)
+        reply_rx.await.map_err(JsError::from)?.map_err(JsError::QuickJs)
     }
 
     /// Evaluate async JS code and deserialize the result.

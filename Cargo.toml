@@ -1,7 +1,7 @@
 [package]
 name = "tokimo-package-js-runtime"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "QuickJS JavaScript runtime wrapper for Rust with async function injection support"
 license = "MIT"
 
