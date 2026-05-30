@@ -30,6 +30,15 @@ impl JsValue {
     pub fn to_rust<T: DeserializeOwned>(&self) -> Result<T, JsError> {
         T::deserialize(self)
     }
+
+    /// Build a `JsValue` from any serde-serializable Rust value.
+    ///
+    /// Serializes directly into the in-memory value tree (no JSON string
+    /// round-trip). Handy for injecting a struct or map as a JS global, e.g.
+    /// `set_global("args", JsValue::from_rust(&args)?)`.
+    pub fn from_rust<T: Serialize>(value: &T) -> Result<JsValue, JsError> {
+        value.serialize(JsValueSerializer)
+    }
 }
 
 macro_rules! deserialize_int {
@@ -203,5 +212,283 @@ impl<'js> FromJs<'js> for JsValue {
             }
             _ => Ok(JsValue::Undefined),
         }
+    }
+}
+
+// ─── Serializer: any `Serialize` value → `JsValue` ─────────────────────────
+
+use serde::ser::{
+    self, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple, SerializeTupleStruct,
+    SerializeTupleVariant, Serializer,
+};
+
+struct JsValueSerializer;
+
+impl Serializer for JsValueSerializer {
+    type Ok = JsValue;
+    type Error = JsError;
+    type SerializeSeq = SeqSerializer;
+    type SerializeTuple = SeqSerializer;
+    type SerializeTupleStruct = SeqSerializer;
+    type SerializeTupleVariant = TupleVariantSerializer;
+    type SerializeMap = MapSerializer;
+    type SerializeStruct = StructSerializer;
+    type SerializeStructVariant = StructVariantSerializer;
+
+    fn serialize_bool(self, v: bool) -> Result<JsValue, JsError> {
+        Ok(JsValue::Bool(v))
+    }
+    fn serialize_i8(self, v: i8) -> Result<JsValue, JsError> {
+        Ok(JsValue::Int(v as i64))
+    }
+    fn serialize_i16(self, v: i16) -> Result<JsValue, JsError> {
+        Ok(JsValue::Int(v as i64))
+    }
+    fn serialize_i32(self, v: i32) -> Result<JsValue, JsError> {
+        Ok(JsValue::Int(v as i64))
+    }
+    fn serialize_i64(self, v: i64) -> Result<JsValue, JsError> {
+        Ok(JsValue::Int(v))
+    }
+    fn serialize_u8(self, v: u8) -> Result<JsValue, JsError> {
+        Ok(JsValue::Int(v as i64))
+    }
+    fn serialize_u16(self, v: u16) -> Result<JsValue, JsError> {
+        Ok(JsValue::Int(v as i64))
+    }
+    fn serialize_u32(self, v: u32) -> Result<JsValue, JsError> {
+        Ok(JsValue::Int(v as i64))
+    }
+    fn serialize_u64(self, v: u64) -> Result<JsValue, JsError> {
+        // Values beyond i64 range fall back to Float (JS numbers are f64).
+        match i64::try_from(v) {
+            Ok(i) => Ok(JsValue::Int(i)),
+            Err(_) => Ok(JsValue::Float(v as f64)),
+        }
+    }
+    fn serialize_f32(self, v: f32) -> Result<JsValue, JsError> {
+        Ok(JsValue::Float(v as f64))
+    }
+    fn serialize_f64(self, v: f64) -> Result<JsValue, JsError> {
+        Ok(JsValue::Float(v))
+    }
+    fn serialize_char(self, v: char) -> Result<JsValue, JsError> {
+        Ok(JsValue::String(v.to_string()))
+    }
+    fn serialize_str(self, v: &str) -> Result<JsValue, JsError> {
+        Ok(JsValue::String(v.to_owned()))
+    }
+    fn serialize_bytes(self, v: &[u8]) -> Result<JsValue, JsError> {
+        Ok(JsValue::Array(v.iter().map(|b| JsValue::Int(*b as i64)).collect()))
+    }
+    fn serialize_none(self) -> Result<JsValue, JsError> {
+        Ok(JsValue::Null)
+    }
+    fn serialize_some<T: ?Sized + ser::Serialize>(self, value: &T) -> Result<JsValue, JsError> {
+        value.serialize(self)
+    }
+    fn serialize_unit(self) -> Result<JsValue, JsError> {
+        Ok(JsValue::Null)
+    }
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<JsValue, JsError> {
+        Ok(JsValue::Null)
+    }
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        variant: &'static str,
+    ) -> Result<JsValue, JsError> {
+        Ok(JsValue::String(variant.to_owned()))
+    }
+    fn serialize_newtype_struct<T: ?Sized + ser::Serialize>(
+        self,
+        _name: &'static str,
+        value: &T,
+    ) -> Result<JsValue, JsError> {
+        value.serialize(self)
+    }
+    fn serialize_newtype_variant<T: ?Sized + ser::Serialize>(
+        self,
+        _name: &'static str,
+        _index: u32,
+        variant: &'static str,
+        value: &T,
+    ) -> Result<JsValue, JsError> {
+        let mut map = BTreeMap::new();
+        map.insert(variant.to_owned(), value.serialize(JsValueSerializer)?);
+        Ok(JsValue::Object(map))
+    }
+    fn serialize_seq(self, len: Option<usize>) -> Result<SeqSerializer, JsError> {
+        Ok(SeqSerializer {
+            items: Vec::with_capacity(len.unwrap_or(0)),
+        })
+    }
+    fn serialize_tuple(self, len: usize) -> Result<SeqSerializer, JsError> {
+        self.serialize_seq(Some(len))
+    }
+    fn serialize_tuple_struct(self, _name: &'static str, len: usize) -> Result<SeqSerializer, JsError> {
+        self.serialize_seq(Some(len))
+    }
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        variant: &'static str,
+        len: usize,
+    ) -> Result<TupleVariantSerializer, JsError> {
+        Ok(TupleVariantSerializer {
+            variant,
+            items: Vec::with_capacity(len),
+        })
+    }
+    fn serialize_map(self, _len: Option<usize>) -> Result<MapSerializer, JsError> {
+        Ok(MapSerializer {
+            map: BTreeMap::new(),
+            next_key: None,
+        })
+    }
+    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<StructSerializer, JsError> {
+        Ok(StructSerializer { map: BTreeMap::new() })
+    }
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        variant: &'static str,
+        _len: usize,
+    ) -> Result<StructVariantSerializer, JsError> {
+        Ok(StructVariantSerializer {
+            variant,
+            map: BTreeMap::new(),
+        })
+    }
+}
+
+struct SeqSerializer {
+    items: Vec<JsValue>,
+}
+
+impl SerializeSeq for SeqSerializer {
+    type Ok = JsValue;
+    type Error = JsError;
+    fn serialize_element<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<(), JsError> {
+        self.items.push(value.serialize(JsValueSerializer)?);
+        Ok(())
+    }
+    fn end(self) -> Result<JsValue, JsError> {
+        Ok(JsValue::Array(self.items))
+    }
+}
+
+impl SerializeTuple for SeqSerializer {
+    type Ok = JsValue;
+    type Error = JsError;
+    fn serialize_element<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<(), JsError> {
+        SerializeSeq::serialize_element(self, value)
+    }
+    fn end(self) -> Result<JsValue, JsError> {
+        SerializeSeq::end(self)
+    }
+}
+
+impl SerializeTupleStruct for SeqSerializer {
+    type Ok = JsValue;
+    type Error = JsError;
+    fn serialize_field<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<(), JsError> {
+        SerializeSeq::serialize_element(self, value)
+    }
+    fn end(self) -> Result<JsValue, JsError> {
+        SerializeSeq::end(self)
+    }
+}
+
+struct TupleVariantSerializer {
+    variant: &'static str,
+    items: Vec<JsValue>,
+}
+
+impl SerializeTupleVariant for TupleVariantSerializer {
+    type Ok = JsValue;
+    type Error = JsError;
+    fn serialize_field<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<(), JsError> {
+        self.items.push(value.serialize(JsValueSerializer)?);
+        Ok(())
+    }
+    fn end(self) -> Result<JsValue, JsError> {
+        let mut map = BTreeMap::new();
+        map.insert(self.variant.to_owned(), JsValue::Array(self.items));
+        Ok(JsValue::Object(map))
+    }
+}
+
+struct MapSerializer {
+    map: BTreeMap<String, JsValue>,
+    next_key: Option<String>,
+}
+
+impl SerializeMap for MapSerializer {
+    type Ok = JsValue;
+    type Error = JsError;
+    fn serialize_key<T: ?Sized + ser::Serialize>(&mut self, key: &T) -> Result<(), JsError> {
+        self.next_key = Some(object_key(key.serialize(JsValueSerializer)?)?);
+        Ok(())
+    }
+    fn serialize_value<T: ?Sized + ser::Serialize>(&mut self, value: &T) -> Result<(), JsError> {
+        let key = self
+            .next_key
+            .take()
+            .ok_or_else(|| JsError::TypeConversion("serialize_value called before serialize_key".into()))?;
+        self.map.insert(key, value.serialize(JsValueSerializer)?);
+        Ok(())
+    }
+    fn end(self) -> Result<JsValue, JsError> {
+        Ok(JsValue::Object(self.map))
+    }
+}
+
+struct StructSerializer {
+    map: BTreeMap<String, JsValue>,
+}
+
+impl SerializeStruct for StructSerializer {
+    type Ok = JsValue;
+    type Error = JsError;
+    fn serialize_field<T: ?Sized + ser::Serialize>(&mut self, key: &'static str, value: &T) -> Result<(), JsError> {
+        self.map.insert(key.to_owned(), value.serialize(JsValueSerializer)?);
+        Ok(())
+    }
+    fn end(self) -> Result<JsValue, JsError> {
+        Ok(JsValue::Object(self.map))
+    }
+}
+
+struct StructVariantSerializer {
+    variant: &'static str,
+    map: BTreeMap<String, JsValue>,
+}
+
+impl SerializeStructVariant for StructVariantSerializer {
+    type Ok = JsValue;
+    type Error = JsError;
+    fn serialize_field<T: ?Sized + ser::Serialize>(&mut self, key: &'static str, value: &T) -> Result<(), JsError> {
+        self.map.insert(key.to_owned(), value.serialize(JsValueSerializer)?);
+        Ok(())
+    }
+    fn end(self) -> Result<JsValue, JsError> {
+        let mut outer = BTreeMap::new();
+        outer.insert(self.variant.to_owned(), JsValue::Object(self.map));
+        Ok(JsValue::Object(outer))
+    }
+}
+
+/// JS object keys are strings; coerce a serialized key into one.
+fn object_key(key: JsValue) -> Result<String, JsError> {
+    match key {
+        JsValue::String(s) => Ok(s),
+        JsValue::Int(i) => Ok(i.to_string()),
+        JsValue::Float(f) => Ok(f.to_string()),
+        JsValue::Bool(b) => Ok(b.to_string()),
+        other => Err(JsError::TypeConversion(format!("invalid object key type: {other:?}"))),
     }
 }

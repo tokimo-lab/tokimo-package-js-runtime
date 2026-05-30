@@ -35,3 +35,9 @@ impl serde::de::Error for JsError {
         JsError::TypeConversion(msg.to_string())
     }
 }
+
+impl serde::ser::Error for JsError {
+    fn custom<T: std::fmt::Display>(msg: T) -> Self {
+        JsError::TypeConversion(msg.to_string())
+    }
+}

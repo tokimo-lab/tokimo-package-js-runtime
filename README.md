@@ -92,6 +92,24 @@ let result = rt.eval_with_timeout("while (true) {}", Duration::from_millis(100))
 assert!(result.is_err()); // interrupted; the runtime stays usable afterwards
 ```
 
+### Inject Global Objects
+
+Expose Rust data to scripts by converting any `serde::Serialize` value into a
+`JsValue` with `JsValue::from_rust`, then setting it as a global:
+
+```rust
+use serde::Serialize;
+use tokimo_package_js_runtime::{JsRuntime, JsValue};
+
+#[derive(Serialize)]
+struct Args { xx: i64, bb: i64 }
+
+let rt = JsRuntime::new().unwrap();
+rt.set_global("args", JsValue::from_rust(&Args { xx: 11, bb: 22 }).unwrap()).unwrap();
+let sum: i64 = rt.eval_as("args.xx + args.bb").unwrap();
+assert_eq!(sum, 33);
+```
+
 ### Export to Custom Structs
 
 A registered function can return a `JsValue`, which deserializes into any

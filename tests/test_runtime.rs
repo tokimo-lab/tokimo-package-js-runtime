@@ -507,6 +507,77 @@ async fn test_async_set_global() {
     assert_eq!(result, 101);
 }
 
+// ─── Global object injection (from_rust) ───────────────────────────────────
+
+#[test]
+fn test_set_global_object_from_map() {
+    use std::collections::BTreeMap;
+    let rt = JsRuntime::new().unwrap();
+    let args = BTreeMap::from([("xx", 11), ("bb", 22)]);
+    rt.set_global("args", JsValue::from_rust(&args).unwrap()).unwrap();
+    let sum: i64 = rt.eval_as("args.xx + args.bb").unwrap();
+    assert_eq!(sum, 33);
+}
+
+#[test]
+fn test_set_global_object_from_struct() {
+    use serde::Serialize;
+    #[derive(Serialize)]
+    struct Config {
+        name: String,
+        retries: u32,
+        ratio: f64,
+        tags: Vec<String>,
+    }
+    let rt = JsRuntime::new().unwrap();
+    let cfg = Config {
+        name: "svc".into(),
+        retries: 3,
+        ratio: 1.5,
+        tags: vec!["a".into(), "b".into()],
+    };
+    rt.set_global("config", JsValue::from_rust(&cfg).unwrap()).unwrap();
+    let name: String = rt.eval_as("config.name").unwrap();
+    let retries: i64 = rt.eval_as("config.retries").unwrap();
+    let ratio: f64 = rt.eval_as("config.ratio").unwrap();
+    let tags_len: i64 = rt.eval_as("config.tags.length").unwrap();
+    assert_eq!(name, "svc");
+    assert_eq!(retries, 3);
+    assert_eq!(ratio, 1.5);
+    assert_eq!(tags_len, 2);
+}
+
+#[test]
+fn test_from_rust_roundtrip_nested() {
+    use serde::{Deserialize, Serialize};
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct Point {
+        x: i64,
+        y: i64,
+    }
+    let rt = JsRuntime::new().unwrap();
+    let p = Point { x: 3, y: 4 };
+    rt.set_global("p", JsValue::from_rust(&p).unwrap()).unwrap();
+    let back: Point = rt.eval_as("({ x: p.x + 1, y: p.y + 1 })").unwrap();
+    assert_eq!(back, Point { x: 4, y: 5 });
+}
+
+#[tokio::test]
+async fn test_async_set_global_object_from_struct() {
+    use serde::Serialize;
+    #[derive(Serialize)]
+    struct Args {
+        xx: i64,
+        bb: i64,
+    }
+    let rt = AsyncJsRuntime::new().unwrap();
+    rt.set_global("args", JsValue::from_rust(&Args { xx: 11, bb: 22 }).unwrap())
+        .await
+        .unwrap();
+    let sum: i64 = rt.eval_as("args.xx + args.bb").await.unwrap();
+    assert_eq!(sum, 33);
+}
+
 #[tokio::test]
 async fn test_async_register_mutable_fn() {
     use tokimo_package_js_runtime::MutFn;
