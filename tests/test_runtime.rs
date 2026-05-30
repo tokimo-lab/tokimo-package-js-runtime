@@ -81,6 +81,47 @@ fn test_eval_error() {
     assert!(result.is_err());
 }
 
+// ─── Regression: number & promise edge cases ───────────────────────────────
+
+#[test]
+fn test_eval_nan_as_float() {
+    let rt = JsRuntime::new().unwrap();
+    let result: f64 = rt.eval_as("0/0").unwrap();
+    assert!(result.is_nan());
+}
+
+#[test]
+fn test_eval_infinity_as_float() {
+    let rt = JsRuntime::new().unwrap();
+    let result: f64 = rt.eval_as("1/0").unwrap();
+    assert!(result.is_infinite() && result.is_sign_positive());
+}
+
+#[test]
+fn test_eval_large_integer_as_i64() {
+    let rt = JsRuntime::new().unwrap();
+    // 3_000_000_000 exceeds i32, so QuickJS represents it as a float.
+    let result: i64 = rt.eval_as("3000000000").unwrap();
+    assert_eq!(result, 3_000_000_000);
+}
+
+#[test]
+fn test_eval_integral_float_as_u64() {
+    let rt = JsRuntime::new().unwrap();
+    let result: u64 = rt.eval_as("2 ** 40").unwrap();
+    assert_eq!(result, 1_099_511_627_776);
+}
+
+#[test]
+fn test_sync_eval_promise_errors() {
+    let rt = JsRuntime::new().unwrap();
+    // The sync runtime has no event loop, so a Promise result must error
+    // clearly rather than silently yielding `undefined`.
+    let result = rt.eval("Promise.resolve(42)");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("Promise"));
+}
+
 // ─── Function Injection ────────────────────────────────────────────────────
 
 #[test]

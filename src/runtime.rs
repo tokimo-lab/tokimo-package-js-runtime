@@ -33,6 +33,11 @@ impl JsRuntime {
                 .eval(code)
                 .catch(&ctx)
                 .map_err(|e| JsError::QuickJs(e.to_string()))?;
+            if val.is_promise() {
+                return Err(JsError::QuickJs(
+                    "evaluated to a Promise; use AsyncJsRuntime to await async code".to_string(),
+                ));
+            }
             JsValue::from_js(&ctx, val).map_err(|e| JsError::TypeConversion(e.to_string()))
         })
     }

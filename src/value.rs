@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use rquickjs::{Ctx, FromJs, IntoJs, Object, Value};
+use serde::de::{self, DeserializeOwned, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use crate::JsError;
@@ -21,9 +22,115 @@ pub enum JsValue {
 
 impl JsValue {
     /// Convert to a Rust type using serde deserialization.
-    pub fn to_rust<T: for<'de> Deserialize<'de>>(&self) -> Result<T, JsError> {
-        let json = serde_json::to_string(self).map_err(|e| JsError::TypeConversion(e.to_string()))?;
-        serde_json::from_str(&json).map_err(|e| JsError::TypeConversion(e.to_string()))
+    ///
+    /// Deserializes directly from the in-memory value (no JSON string
+    /// round-trip), so `NaN`/`Infinity` survive and integer-valued floats
+    /// (how QuickJS represents numbers larger than `i32`) deserialize into
+    /// integer targets.
+    pub fn to_rust<T: DeserializeOwned>(&self) -> Result<T, JsError> {
+        T::deserialize(self)
+    }
+}
+
+macro_rules! deserialize_int {
+    ($method:ident, $visit:ident, $ty:ty) => {
+        fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, JsError> {
+            match self {
+                JsValue::Int(i) => visitor.$visit(*i as $ty),
+                JsValue::Float(f) if f.is_finite() && f.fract() == 0.0 => visitor.$visit(*f as $ty),
+                _ => self.deserialize_any(visitor),
+            }
+        }
+    };
+}
+
+impl<'de> Deserializer<'de> for &'de JsValue {
+    type Error = JsError;
+
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, JsError> {
+        match self {
+            JsValue::Undefined | JsValue::Null => visitor.visit_unit(),
+            JsValue::Bool(b) => visitor.visit_bool(*b),
+            JsValue::Int(i) => visitor.visit_i64(*i),
+            JsValue::Float(f) => visitor.visit_f64(*f),
+            JsValue::String(s) => visitor.visit_str(s),
+            JsValue::Array(arr) => visitor.visit_seq(SeqDeserializer { iter: arr.iter() }),
+            JsValue::Object(map) => visitor.visit_map(MapDeserializer {
+                iter: map.iter(),
+                value: None,
+            }),
+        }
+    }
+
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, JsError> {
+        match self {
+            JsValue::Undefined | JsValue::Null => visitor.visit_none(),
+            _ => visitor.visit_some(self),
+        }
+    }
+
+    deserialize_int!(deserialize_i8, visit_i8, i8);
+    deserialize_int!(deserialize_i16, visit_i16, i16);
+    deserialize_int!(deserialize_i32, visit_i32, i32);
+    deserialize_int!(deserialize_i64, visit_i64, i64);
+    deserialize_int!(deserialize_u8, visit_u8, u8);
+    deserialize_int!(deserialize_u16, visit_u16, u16);
+    deserialize_int!(deserialize_u32, visit_u32, u32);
+    deserialize_int!(deserialize_u64, visit_u64, u64);
+
+    serde::forward_to_deserialize_any! {
+        bool f32 f64 char str string bytes byte_buf unit unit_struct
+        newtype_struct seq tuple tuple_struct map struct enum identifier
+        ignored_any
+    }
+}
+
+struct SeqDeserializer<'de> {
+    iter: std::slice::Iter<'de, JsValue>,
+}
+
+impl<'de> SeqAccess<'de> for SeqDeserializer<'de> {
+    type Error = JsError;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, JsError>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        match self.iter.next() {
+            Some(v) => seed.deserialize(v).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+struct MapDeserializer<'de> {
+    iter: std::collections::btree_map::Iter<'de, String, JsValue>,
+    value: Option<&'de JsValue>,
+}
+
+impl<'de> MapAccess<'de> for MapDeserializer<'de> {
+    type Error = JsError;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, JsError>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        match self.iter.next() {
+            Some((k, v)) => {
+                self.value = Some(v);
+                let key_de: de::value::StrDeserializer<'de, JsError> = k.as_str().into_deserializer();
+                seed.deserialize(key_de).map(Some)
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, JsError>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let v = self.value.take().expect("next_value_seed called before next_key_seed");
+        seed.deserialize(v)
     }
 }
 

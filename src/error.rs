@@ -29,3 +29,9 @@ impl From<tokio::sync::oneshot::error::RecvError> for JsError {
         JsError::Channel(e.to_string())
     }
 }
+
+impl serde::de::Error for JsError {
+    fn custom<T: std::fmt::Display>(msg: T) -> Self {
+        JsError::TypeConversion(msg.to_string())
+    }
+}
