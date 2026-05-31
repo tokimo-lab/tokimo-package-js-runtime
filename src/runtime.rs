@@ -1,8 +1,10 @@
+use std::ffi::CString;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use rquickjs::{
-    AsyncContext, AsyncRuntime, CatchResultExt, Context, Ctx, FromJs, Function, IntoJs, Runtime, function::IntoJsFunc,
+    AsyncContext, AsyncRuntime, CatchResultExt, Context, Ctx, FromJs, Function, IntoJs, Runtime, Value,
+    function::IntoJsFunc, qjs,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -45,6 +47,38 @@ impl JsRuntime {
     pub fn eval_as<T: for<'de> serde::Deserialize<'de>>(&self, code: &str) -> JsResult<T> {
         let js_val = self.eval(code)?;
         js_val.to_rust()
+    }
+
+    /// Compile-only syntax check: parses `code` as a global script WITHOUT
+    /// executing it. Returns Err(JsError) carrying the SyntaxError message
+    /// (include line:col if available) when the script is syntactically invalid.
+    pub fn check_syntax(&self, code: &str) -> JsResult<()> {
+        let source =
+            CString::new(code).map_err(|e| JsError::QuickJs(format!("script contains interior NUL byte: {e}")))?;
+        self.ctx.with(|ctx| {
+            let raw_ctx = ctx.as_raw().as_ptr();
+            let flags = (qjs::JS_EVAL_TYPE_GLOBAL | qjs::JS_EVAL_FLAG_COMPILE_ONLY) as i32;
+            let val = unsafe {
+                qjs::JS_Eval(
+                    raw_ctx,
+                    source.as_ptr(),
+                    code.len() as _,
+                    c"workflow.js".as_ptr(),
+                    flags,
+                )
+            };
+            let is_exception = unsafe { qjs::JS_IsException(val) };
+            let error = if is_exception {
+                Some(JsError::QuickJs(format_js_exception(&ctx.catch())))
+            } else {
+                None
+            };
+            unsafe { qjs::JS_FreeValue(raw_ctx, val) };
+            match error {
+                Some(err) => Err(err),
+                None => Ok(()),
+            }
+        })
     }
 
     /// Evaluate JS code, interrupting execution if it runs longer than `timeout`.
@@ -111,6 +145,27 @@ impl JsRuntime {
             ctx.globals().set(name, value)?;
             Ok(())
         })
+    }
+}
+
+fn format_js_exception(value: &Value<'_>) -> String {
+    let Some(obj) = value.as_object() else {
+        return "JavaScript exception".to_string();
+    };
+    let message = obj
+        .get::<_, String>("message")
+        .unwrap_or_else(|_| "JavaScript exception".to_string());
+    let message = obj
+        .get::<_, String>("name")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .map_or(message.clone(), |name| format!("{name}: {message}"));
+    let line = obj.get::<_, u32>("lineNumber").ok();
+    let column = obj.get::<_, u32>("columnNumber").ok();
+    match (line, column) {
+        (Some(line), Some(column)) => format!("workflow.js:{line}:{column}: {message}"),
+        (Some(line), None) => format!("workflow.js:{line}: {message}"),
+        _ => message,
     }
 }
 
@@ -319,5 +374,31 @@ impl AsyncJsRuntime {
 impl Drop for AsyncJsRuntime {
     fn drop(&mut self) {
         let _ = self.tx.send(AsyncRequest::Shutdown);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_syntax_accepts_valid_script() {
+        let rt = JsRuntime::new().expect("runtime");
+        rt.check_syntax("const x = 1; function ok() { return x; }")
+            .expect("valid syntax");
+    }
+
+    #[test]
+    fn check_syntax_rejects_invalid_script() {
+        let rt = JsRuntime::new().expect("runtime");
+        let err = rt.check_syntax("const = ;").expect_err("invalid syntax");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SyntaxError")
+                || msg.contains("syntax")
+                || msg.contains("unexpected")
+                || msg.contains("workflow.js:"),
+            "unexpected error message: {msg}"
+        );
     }
 }
